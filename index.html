@@ -51,13 +51,15 @@
   h1 .accent{font-style:italic;color:var(--visited-b)}
   .sub{color:var(--muted);font-size:14.5px;margin:9px 0 0 2px;max-width:42ch}
 
-  .reset{
+  .tools{display:flex;gap:8px;flex-wrap:wrap}
+  .tbtn,.reset{
     appearance:none;border:1px solid #D4DAD3;background:var(--surface);color:var(--muted);
     font-family:var(--sans);font-size:12.5px;font-weight:500;letter-spacing:.02em;
     padding:9px 15px;border-radius:999px;cursor:pointer;transition:all .18s ease;white-space:nowrap;
   }
+  .tbtn:hover{color:var(--visited-b);border-color:#BFD9CB;background:#F4FAF6}
+  .tbtn:focus-visible,.reset:focus-visible{outline:2px solid var(--visited-b);outline-offset:2px}
   .reset:hover{color:#B23B2E;border-color:#E3C3BE;background:#FFF7F5}
-  .reset:focus-visible{outline:2px solid var(--visited-b);outline-offset:2px}
 
   /* Layout */
   .grid{display:grid;grid-template-columns:312px 1fr;gap:22px;align-items:start}
@@ -138,7 +140,12 @@
       <h1>Where <span class="accent">I've Been</span></h1>
       <p class="sub">Tap any state to mark it visited. Your map saves automatically and will be here when you come back.</p>
     </div>
-    <button class="reset" id="reset">Clear map</button>
+    <div class="tools">
+      <button class="tbtn" id="export" title="Download your map as a file">Save to file</button>
+      <button class="tbtn" id="import" title="Load a previously saved file">Open file</button>
+      <button class="reset" id="reset">Clear map</button>
+    </div>
+    <input type="file" id="file" accept="application/json,.json" hidden>
   </header>
 
   <div class="grid">
@@ -285,22 +292,73 @@ function update(){
   }
 }
 
-// Storage
-async function save(){
-  try{await window.storage.set('visited-states',JSON.stringify([...visited]));}
-  catch(err){console.error('save failed',err);}
+// Storage: use Claude's runtime store if present, else the browser's localStorage
+const KEY='visited-states';
+const hasClaude = typeof window.storage!=='undefined' && window.storage && typeof window.storage.get==='function';
+async function storeSet(v){
+  if(hasClaude){try{await window.storage.set(KEY,v);return;}catch(e){}}
+  try{localStorage.setItem(KEY,v);}catch(e){console.error('save failed',e);}
 }
+async function storeGet(){
+  if(hasClaude){try{const r=await window.storage.get(KEY);return r&&r.value?r.value:null;}catch(e){}}
+  try{return localStorage.getItem(KEY);}catch(e){return null;}
+}
+async function storeDel(){
+  if(hasClaude){try{await window.storage.delete(KEY);}catch(e){}}
+  try{localStorage.removeItem(KEY);}catch(e){}
+}
+
+async function save(){ await storeSet(JSON.stringify([...visited])); }
 async function load(){
   try{
-    const r=await window.storage.get('visited-states');
-    if(r&&r.value){
-      const arr=JSON.parse(r.value);
+    const raw=await storeGet();
+    if(raw){
+      const arr=JSON.parse(raw);
       arr.forEach(a=>{if(pathEls[a]){visited.add(a);pathEls[a].classList.add('on');labelEls[a]&&labelEls[a].classList.add('on');
         const n=STATES.find(s=>s.abbr===a);pathEls[a].setAttribute('aria-label',n.name+', visited');}});
     }
   }catch(err){/* no saved data yet */}
   update();
 }
+
+// Apply a set of abbreviations (used by import)
+function applyState(arr){
+  visited.forEach(a=>{pathEls[a].classList.remove('on');labelEls[a]&&labelEls[a].classList.remove('on');
+    const n=STATES.find(s=>s.abbr===a);pathEls[a].setAttribute('aria-label',n.name+', not visited');});
+  visited.clear();
+  arr.forEach(a=>{if(pathEls[a]){visited.add(a);pathEls[a].classList.add('on');labelEls[a]&&labelEls[a].classList.add('on');
+    const n=STATES.find(s=>s.abbr===a);pathEls[a].setAttribute('aria-label',n.name+', visited');}});
+  update();save();
+}
+
+// Export to a downloadable file
+document.getElementById('export').addEventListener('click',()=>{
+  const payload={app:'where-ive-been',version:1,savedAt:new Date().toISOString(),states:[...visited]};
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  const stamp=new Date().toISOString().slice(0,10);
+  a.href=url;a.download='where-ive-been-'+stamp+'.json';document.body.appendChild(a);a.click();a.remove();
+  URL.revokeObjectURL(url);
+});
+
+// Import from a saved file
+const fileInput=document.getElementById('file');
+document.getElementById('import').addEventListener('click',()=>fileInput.click());
+fileInput.addEventListener('change',e=>{
+  const f=e.target.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{
+      const data=JSON.parse(r.result);
+      const arr=Array.isArray(data)?data:data.states;
+      if(!Array.isArray(arr))throw new Error('bad');
+      applyState(arr.filter(a=>pathEls[a]));
+    }catch(err){alert("That file doesn't look like a saved map. Pick a file you exported with “Save to file.”");}
+    fileInput.value='';
+  };
+  r.readAsText(f);
+});
 
 // Reset
 document.getElementById('reset').addEventListener('click',async()=>{
@@ -309,7 +367,7 @@ document.getElementById('reset').addEventListener('click',async()=>{
   visited.forEach(a=>{pathEls[a].classList.remove('on');labelEls[a]&&labelEls[a].classList.remove('on');});
   visited.clear();
   update();
-  try{await window.storage.delete('visited-states');}catch(e){}
+  await storeDel();
 });
 
 load();
